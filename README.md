@@ -2,7 +2,7 @@
 
 Greetings, and welcome to the unofficial api for thesaurus.com. It is compatible with Python 2 and 3. While the code is quite readable, this documentation is your friend— as am I :) Let me know if there's anything you have trouble with, or if you have any ideas on how to make it better.
 
-**Note**: If you have used this library before, be warned that some things have changed. Thesaurus.com updated their code— removing complexity filtering and changing how they classify "informal" words. On the bright side, there is now an `isVulgar` filter.  
+**Note**: Recently, thesaurus.com broke their https redirects. This was fixed, so just update your pip package and you'll be good. Also, I have added custom exceptions— see the **Exceptions** section towards the end of this document on how to handle them in your programs. Lastly, we now have a changelog! Check it out! :)  
 
 ## Introduction
 With the thesaurus-api, you are able to grab synonyms and antonyms from thesaurus.com. Thanks to the way the website highlights synonym/antonym entries in different colors according to their relevance, I have also included functions to grab certain ranks of syn/ant entries according to the level of relevance you require.
@@ -247,6 +247,37 @@ As for the other functions,
  'Stanton took charge of the kettle and dished out the rations that night.']
 ```
 
+## Exceptions
+
+Recently, I have added custom exceptions that will be raised in response to different errors that can occur while using the library.
+
+```python
+import thesaurus as th
+
+# MISSPELLINGS
+try:
+	th.Word('boks')
+except th.exceptions.MisspellingError as e:
+	# No thesaurus results for word 'boks'. Did you mean 'books'?
+	print(e)
+
+# WORD DOESN'T EXIST
+try:
+	th.Word('lkjsdflkj')
+except th.exceptions.WordNotFoundError as e:
+	# No thesaurus results for word 'lkjsdflkj'.
+	print(e)
+
+# PROBLEM CONNECTING TO THESAURUS.COM
+try:
+	th.Word('my wifi has been disconnected')
+except th.exceptions.ThesaurusRequestError as e:
+	# Error connecting to thesaurus.com :
+	# HTTPSConnectionPool(host='www.thesaurus.com', port=443): Max retries...
+	print(e)
+```
+
+
 ## Coming Soon
 ~~Make a findWord(inputWord) function that will return both synonyms and antonyms of individual ranks into a dictionary.~~
 
@@ -270,3 +301,6 @@ To [Stefano](https://github.com/stefano-bragaglia) for suggesting that I add fil
 To [Suhas](https://github.com/syelluru) for correcting my errors.
 
 To [Bradley](https://github.com/bradleyfowler123) for his help in designing the `isVulgar` UX. He and his synonym-loving grandmother shall receive an authentic Manwholikespie personal poem one of these days.  
+
+To [theolux](https://github.com/theolux) for alerting me that the website's https redirects were broken.
+
