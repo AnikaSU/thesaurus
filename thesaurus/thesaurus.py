@@ -17,6 +17,10 @@ import json
 import requests
 from bs4 import BeautifulSoup
 
+from .exceptions import (
+    WordNotFoundError, ThesaurusRequestError, MisspellingError
+)
+
 # ===========================   GLOBAL CONSTANTS   =============================
 ALL = 'all'
 
@@ -87,21 +91,40 @@ def fetchWordData(inputWord):
             }
         where `Entry` is a namedtuple.
     """
+
     url = formatWordUrl(inputWord)
-    r = requests.get(url)
+
+    # Try to download the page source, else throw an error saying we couldn't
+    #   connect to the website.
+    try:
+        r = requests.get(url)
+    except Exception as e:
+        raise ThesaurusRequestError(e)
+    
     soup = BeautifulSoup(r.content, 'html.parser')
 
-    try:
-        data = soup.select('script')[12].text
-        data = data[22+1:-1] # remove 'window.INITIAL_STATE = ' and ';'
-        data = json.loads(data)
-    except:
-        # Find the JS block with the most text in it. This is our data.
-        dataIdx = max([(i, len(x.text)) for i, x in enumerate(soup.select('script'))],
-            key=lambda z: z[1])[0] # sort by length of text. Idx is 0th elment.
-        data = soup.select('script')[dataIdx].text
-        data = data[22+1:-1] # remove 'window.INITIAL_STATE = ' and ';'
-        data = json.loads(data)
+    # The site didn't have this word in their collection.
+    if '/noresult' in r.url:
+        raise WordNotFoundError(inputWord)
+    
+    # Traverse the javascript to find where they embedded our data. It keeps
+    #   changing index. It used to be 12, now it's 15. Yay ads and tracking!
+    data = soup.select('script')
+    for d in reversed(data):
+        if d.text[0:20] == 'window.INITIAL_STATE':
+            data = d.text[23:-1] # remove 'window.INITIAL_STATE = ' and ';'
+            data = json.loads(data)
+            break
+
+    # Disambiguation. They believe we've misspelled it, and they're providing us
+    #   with potentially correct spellings. Only bother printing the first one.
+    if '/misspelling' in r.url:
+        # TODO: Should we include a way to retrieve this data?
+        otherWords = data.get('searchData', {}).get('spellSuggestionsData', [])
+        if not otherWords:
+            raise MisspellingError(inputWord, '')
+        else:
+            raise MisspellingError(inputWord, otherWords[0].get('term'))
 
     defns = [] # where we shall store data for each definition tab
 
@@ -135,15 +158,10 @@ def fetchWordData(inputWord):
 
         ### NOTE, TODO ###
         """
-        Currently, length and complexity are both set to level == 0.
-          Originally, they were 1-3. In thesaurus.com's newest update, when they
-          began obfuscating the css classes, they removed the complexity data,
-          and made the length data harder to extract. I actually haven't found
-          anything to suggest that the complexity data still even exists, but
-          I can't imagine them deleting this data... I'll keep looking.
-
-        Until I can find a fix for this, both will be set to 0, and ._filter()
-          will just ignore any length/complexity requests.
+        Currently, complexity is set to level == 0 as I hope it will return.
+          Originally, it was 1-3. In thesaurus.com's newest update, they removed
+          this complexity data, and made all other data difficult to locate.
+          I can't imagine them deleting this data... we shall see.
         """
 
         for syn in defn.get('synonyms', []):
@@ -209,14 +227,7 @@ class Word(object):
         # in case you want to visit it later
         self.url = formatWordUrl(inputWord)
 
-        try:
-            # fetch the data from thesaurus.com
-            self.data = fetchWordData(inputWord)
-        except:
-            # Thesaurus.com doesn't have this word.
-            # TODO: Question: Should an error be raised? Warning printed?
-            self.data = [{'origin':'', 'examples':[]}]
-
+        self.data = fetchWordData(inputWord)
         self.extra = self.data.pop()
 
     def __len__(self):

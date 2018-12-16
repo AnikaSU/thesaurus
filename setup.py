@@ -5,7 +5,7 @@ with open("README.md", 'r') as fh:
 
 setuptools.setup(
     name="thesaurus",
-    version="0.2.2",
+    version="0.2.3",
     author="Robert Dominguez",
     author_email="robert@robertism.com",
     description="Access synonym and antonym data from thesaurus.com in style.",
