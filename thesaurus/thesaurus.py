@@ -10,11 +10,13 @@ Inspiration and help from others (see credits).
 If there's anything in here you don't understand or want me to change, just
 make an issue or send me an email at robert <at> robertism <dot> com. Thanks :)
 """
-
+import asyncio
+import sys
 from collections import namedtuple
 import json
 
-import requests
+# import requests
+import aiohttp
 from bs4 import BeautifulSoup
 
 from .exceptions import (
@@ -46,174 +48,29 @@ POS_PHRASE =                    'phrase'
 POS_ARTICLE =                   'article'
 # =========================   END GLOBAL CONSTANTS   ===========================
 
-
-def formatWordUrl(inputWord):
-    """Format our word in the url. I could've used urllib's quote thing, but
-    this is more efficient I think. Let me know if there's a word it doesn't
-    work for and I'll change it.
-    """
-    url = 'https://www.thesaurus.com/browse/'
-    url = url + inputWord.strip().lower().replace(' ', '%20')
-    return url
+import logging
+logging.basicConfig(
+    format="%(asctime)s %(levelname)s:%(name)s: %(message)s",
+    level=logging.DEBUG,
+    datefmt="%H:%M:%S",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("thesauri")
+logging.getLogger("chardet.charsetprober").disabled = True
 
 def btw(inputString, lh, rh):
     """Extract a string between two other strings."""
     return inputString.split(lh, 1)[1].split(rh, 1)[0]
 
-def fetchWordData(inputWord):
-    """Downloads the data thesaurus.com has for our word.
-
-    Parameters
-    ----------
-    inputWord : str
-        The word you are searching for on thesaurus.com
-    
-    Returns
-    -------
-    list of dict
-        A list of n+1 dictionaries, where n is the number of definitions for the
-        word, and the last dictionary holds information on word origin and
-        example sentences.
-
-        Each definition dict is of the form:
-            {
-                'meaning' : str,
-                'partOfSpeech' : str,
-                'isVulgar' : bool,
-                'syn' : [Entry(
-                                word=str,
-                                relevance=int,
-                                length=int,
-                                complexity=int,
-                                form=str
-                        )],
-                'ant' : [... same as 'syn' ...]
-            }
-        where `Entry` is a namedtuple.
-    """
-
-    url = formatWordUrl(inputWord)
-
-    # Try to download the page source, else throw an error saying we couldn't
-    #   connect to the website.
-    try:
-        r = requests.get(url)
-    except Exception as e:
-        raise ThesaurusRequestError(e)
-    
-    soup = BeautifulSoup(r.content, 'html.parser')
-
-    # The site didn't have this word in their collection.
-    if '/noresult' in r.url:
-        raise WordNotFoundError(inputWord)
-    
-    # Traverse the javascript to find where they embedded our data. It keeps
-    #   changing index. It used to be 12, now it's 15. Yay ads and tracking!
-    data = soup.select('script')
-    for d in reversed(data):
-        if d.text[0:20] == 'window.INITIAL_STATE':
-            data = d.text[23:-1] # remove 'window.INITIAL_STATE = ' and ';'
-            data = json.loads(data)
-            break
-
-    # Disambiguation. They believe we've misspelled it, and they're providing us
-    #   with potentially correct spellings. Only bother printing the first one.
-    if '/misspelling' in r.url:
-        # TODO: Should we include a way to retrieve this data?
-        otherWords = data.get('searchData', {}).get('spellSuggestionsData', [])
-        if not otherWords:
-            raise MisspellingError(inputWord, '')
-        else:
-            raise MisspellingError(inputWord, otherWords[0].get('term'))
-
-    defns = [] # where we shall store data for each definition tab
-
-    # how we will represent an individual synonym/antonym
-    Entry = namedtuple('Entry', ['word', 'relevance', 'length',
-                                 'complexity', 'form'])
-
-    ## Utility functions to process attributes for our entries.
-    # a syn/ant's relevance is marked 1-3, where 10 -> 1, 100 -> 3.
-    calc_relevance = lambda x: [None, 10, 50, 100].index(x)
-    calc_length    = lambda x: 1 if x < 8 else 2 if x < 11 else 3
-    calc_form      = lambda x: 'informal' if x is True else 'common'
-
-    # iterate through each definition tab, extracting the data for the section
-    for defn in data['searchData']['tunaApiData']['posTabs']:
-        # this dict shall store the relevant data we found under the current def
-        curr_def = {
-            'partOfSpeech' : defn.get('pos'),
-            'meaning' : defn.get('definition'),
-            'isVulgar' : bool(int(defn.get('isVulgar'))),
-            'syn' : [],
-            'ant' : []
-        }
-
-        """
-        the synonym and antonym data will each be stored as lists of tuples.
-          Each item in the tuple corresponds to a certain attribute of the
-          given syn/ant entry, and is used to filter out specific results when
-          Word.synonym() or Word.antonym() is called.
-        """
-
-        ### NOTE, TODO ###
-        """
-        Currently, complexity is set to level == 0 as I hope it will return.
-          Originally, it was 1-3. In thesaurus.com's newest update, they removed
-          this complexity data, and made all other data difficult to locate.
-          I can't imagine them deleting this data... we shall see.
-        """
-
-        for syn in defn.get('synonyms', []):
-            # tuple key is (word, relevance, length, complexity, form, isVulgar)
-            e = Entry(
-                word=syn['term'],
-                relevance=calc_relevance(abs(int(syn['similarity']))),
-                length=calc_length(len(syn['term'])),
-                complexity=0,
-                form=calc_form(bool(int(syn['isInformal'])))
-                # isVulgar=bool(syn['isVulgar']) # *Nested* key is useless.
-            )
-
-            curr_def['syn'].append(e)
-        
-        for ant in defn.get('antonyms', []):
-            # tuple key is (word, relevance, length, complexity, form, isVulgar)
-            e = Entry(
-                word=ant['term'],
-                relevance=calc_relevance(abs(int(ant['similarity']))),
-                length=calc_length(len(ant['term'])),
-                complexity=0,
-                form=calc_form(bool(int(ant['isInformal'])))
-                # isVulgar=bool(ant['isVulgar']) # *Nested* key is useless.
-            )
-
-            curr_def['ant'].append(e)
-        
-        defns.append(curr_def)
-    
-
-    # add origin and examples to the last element so we can .pop() it out later
-    otherData = data['searchData']['tunaApiData']
-    examples = [x['sentence'] for x in otherData['exampleSentences']]
-    etymology = otherData['etymology']
-
-    if len(etymology) > 0:
-        origin = BeautifulSoup(etymology[0]['content'], "html.parser").text
-        ## Uncomment this if you actually care about getting the ENTIRE
-        ##   origin box. I don't think you do, though.
-        # origin = reduce(lambda x,y: x+y, map(
-        #     lambda z: BeautifulSoup(z['content'], "html.parser").text
-        # ))
-    else:
-        origin = ''
-    
-    defns.append({
-        'examples': examples,
-        'origin': origin
-    })
-
-    return defns
+async def fetch_list_of_words(words):
+    words_dict = {}
+    tasks = []
+    async with aiohttp.ClientSession() as session:
+        for word in words:
+            words_dict[word] = Word(word)
+            tasks.append(words_dict[word].fetchWordData(session))
+        await asyncio.gather(*tasks)
+    return words_dict
 
 class Word(object):
     def __init__(self, inputWord):
@@ -225,10 +82,192 @@ class Word(object):
             The word you wish to search for on thesaurus.com
         """
         # in case you want to visit it later
-        self.url = formatWordUrl(inputWord)
+        self.word = inputWord
+        self.url = self.formatWordUrl()
 
-        self.data = fetchWordData(inputWord)
+    def formatWordUrl(self):
+        """Format our word in the url. I could've used urllib's quote thing, but
+        this is more efficient I think. Let me know if there's a word it doesn't
+        work for and I'll change it.
+        """
+        url = 'https://www.thesaurus.com/browse/'
+        url = url + self.word.strip().lower().replace(' ', '%20')
+        return url
+
+    async def fetch_html(self,url,session):
+        resp = await session.request(method="GET", url=url)
+        # resp.raise_for_status()
+        logger.info("Got response [%s] for URL: %s", resp.status, url)
+        html = await resp.text()
+        return html,resp
+
+    async def fetchWordData(self,session):
+        """Downloads the data thesaurus.com has for our word.
+
+        Parameters
+        ----------
+        inputWord : str
+            The word you are searching for on thesaurus.com
+
+        Returns
+        -------
+        list of dict
+            A list of n+1 dictionaries, where n is the number of definitions for the
+            word, and the last dictionary holds information on word origin and
+            example sentences.
+
+            Each definition dict is of the form:
+                {
+                    'meaning' : str,
+                    'partOfSpeech' : str,
+                    'isVulgar' : bool,
+                    'syn' : [Entry(
+                                    word=str,
+                                    relevance=int,
+                                    length=int,
+                                    complexity=int,
+                                    form=str
+                            )],
+                    'ant' : [... same as 'syn' ...]
+                }
+            where `Entry` is a namedtuple.
+        """
+
+        url = self.formatWordUrl()
+
+        # Try to download the page source, else throw an error saying we couldn't
+        #   connect to the website.
+        try:
+            html,r = await self.fetch_html(url,session)
+        except (
+            aiohttp.ClientError,
+            aiohttp.http_exceptions.HttpProcessingError,
+        ) as e:
+            logger.error(
+                "aiohttp exception for %s [%s]: %s",
+                url,
+                getattr(e, "status", None),
+                getattr(e, "message", None),
+            )
+            return
+        except Exception as e:
+            raise ThesaurusRequestError(e)
+
+        soup = BeautifulSoup(html, 'html.parser')
+
+        # The site didn't have this word in their collection.
+        if '/noresult' in str(r.url):
+            raise WordNotFoundError(self.word)
+
+        # Traverse the javascript to find where they embedded our data. It keeps
+        #   changing index. It used to be 12, now it's 15. Yay ads and tracking!
+        data = soup.select('script')
+        for d in reversed(data):
+            if d.text[0:20] == 'window.INITIAL_STATE':
+                data = d.text[23:-1]  # remove 'window.INITIAL_STATE = ' and ';'
+                data = json.loads(data)
+                break
+
+        # Disambiguation. They believe we've misspelled it, and they're providing us
+        #   with potentially correct spellings. Only bother printing the first one.
+        if '/misspelling' in str(r.url):
+            # TODO: Should we include a way to retrieve this data?
+            otherWords = data.get('searchData', {}).get('spellSuggestionsData', [])
+            if not otherWords:
+                raise MisspellingError(self.word, '')
+            else:
+                raise MisspellingError(self.word, otherWords[0].get('term'))
+
+        defns = []  # where we shall store data for each definition tab
+
+        # how we will represent an individual synonym/antonym
+        Entry = namedtuple('Entry', ['word', 'relevance', 'length',
+                                     'complexity', 'form'])
+
+        ## Utility functions to process attributes for our entries.
+        # a syn/ant's relevance is marked 1-3, where 10 -> 1, 100 -> 3.
+        calc_relevance = lambda x: [None, 10, 50, 100].index(x)
+        calc_length = lambda x: 1 if x < 8 else 2 if x < 11 else 3
+        calc_form = lambda x: 'informal' if x is True else 'common'
+
+        # iterate through each definition tab, extracting the data for the section
+        for defn in data['searchData']['tunaApiData']['posTabs']:
+            # this dict shall store the relevant data we found under the current def
+            curr_def = {
+                'partOfSpeech': defn.get('pos'),
+                'meaning': defn.get('definition'),
+                'isVulgar': bool(int(defn.get('isVulgar'))),
+                'syn': [],
+                'ant': []
+            }
+
+            """
+            the synonym and antonym data will each be stored as lists of tuples.
+              Each item in the tuple corresponds to a certain attribute of the
+              given syn/ant entry, and is used to filter out specific results when
+              Word.synonym() or Word.antonym() is called.
+            """
+
+            ### NOTE, TODO ###
+            """
+            Currently, complexity is set to level == 0 as I hope it will return.
+              Originally, it was 1-3. In thesaurus.com's newest update, they removed
+              this complexity data, and made all other data difficult to locate.
+              I can't imagine them deleting this data... we shall see.
+            """
+
+            for syn in defn.get('synonyms', []):
+                # tuple key is (word, relevance, length, complexity, form, isVulgar)
+                e = Entry(
+                    word=syn['term'],
+                    relevance=calc_relevance(abs(int(syn['similarity']))),
+                    length=calc_length(len(syn['term'])),
+                    complexity=0,
+                    form=calc_form(bool(int(syn['isInformal'])))
+                    # isVulgar=bool(syn['isVulgar']) # *Nested* key is useless.
+                )
+
+                curr_def['syn'].append(e)
+
+            for ant in defn.get('antonyms', []):
+                # tuple key is (word, relevance, length, complexity, form, isVulgar)
+                e = Entry(
+                    word=ant['term'],
+                    relevance=calc_relevance(abs(int(ant['similarity']))),
+                    length=calc_length(len(ant['term'])),
+                    complexity=0,
+                    form=calc_form(bool(int(ant['isInformal'])))
+                    # isVulgar=bool(ant['isVulgar']) # *Nested* key is useless.
+                )
+
+                curr_def['ant'].append(e)
+
+            defns.append(curr_def)
+
+        # add origin and examples to the last element so we can .pop() it out later
+        otherData = data['searchData']['tunaApiData']
+        examples = [x['sentence'] for x in otherData['exampleSentences']]
+        etymology = otherData['etymology']
+
+        if len(etymology) > 0:
+            origin = BeautifulSoup(etymology[0]['content'], "html.parser").text
+            ## Uncomment this if you actually care about getting the ENTIRE
+            ##   origin box. I don't think you do, though.
+            # origin = reduce(lambda x,y: x+y, map(
+            #     lambda z: BeautifulSoup(z['content'], "html.parser").text
+            # ))
+        else:
+            origin = ''
+
+        defns.append({
+            'examples': examples,
+            'origin': origin
+        })
+
+        self.data = defns
         self.extra = self.data.pop()
+
+        # return defns
 
     def __len__(self):
         # returns the number of definitions the word has
