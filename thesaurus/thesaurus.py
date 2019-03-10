@@ -11,17 +11,24 @@ If there's anything in here you don't understand or want me to change, just
 make an issue or send me an email at robert <at> robertism <dot> com. Thanks :)
 """
 import asyncio
+import concurrent
 import sys
 from collections import namedtuple
 import json
 
 # import requests
 import aiohttp
+import pathos
 from bs4 import BeautifulSoup
 
 from .exceptions import (
     WordNotFoundError, ThesaurusRequestError, MisspellingError
 )
+# how we will represent an individual synonym/antonym
+# put it here in order to pickle it in multiprocessing
+Entry = namedtuple('Entry', ['word', 'relevance', 'length',
+                             'complexity', 'form'])
+
 
 # ===========================   GLOBAL CONSTANTS   =============================
 ALL = 'all'
@@ -66,6 +73,14 @@ async def fetch_list_of_words(words):
     words_dict = {}
     tasks = []
     async with aiohttp.ClientSession() as session:
+
+        # FIXME: multiprocessing seems can not speed up, test this in future
+        # with concurrent.futures.ProcessPoolExecutor() as executor:
+        #     for word in words:
+        #         words_dict[word] = Word(word)
+        #         tasks.append(words_dict[word].fetchWordData(session,executor))
+        #     await asyncio.gather(*tasks)
+
         for word in words:
             words_dict[word] = Word(word)
             tasks.append(words_dict[word].fetchWordData(session))
@@ -83,6 +98,7 @@ class Word(object):
         """
         # in case you want to visit it later
         self.word = inputWord
+        self.connect_error = False
         self.url = self.formatWordUrl()
 
     def formatWordUrl(self):
@@ -94,70 +110,8 @@ class Word(object):
         url = url + self.word.strip().lower().replace(' ', '%20')
         return url
 
-    async def fetch_html(self,url,session):
-        resp = await session.request(method="GET", url=url)
-        # resp.raise_for_status()
-        logger.info("Got response [%s] for URL: %s", resp.status, url)
-        html = await resp.text()
-        return html,resp
-
-    async def fetchWordData(self,session):
-        """Downloads the data thesaurus.com has for our word.
-
-        Parameters
-        ----------
-        inputWord : str
-            The word you are searching for on thesaurus.com
-
-        Returns
-        -------
-        list of dict
-            A list of n+1 dictionaries, where n is the number of definitions for the
-            word, and the last dictionary holds information on word origin and
-            example sentences.
-
-            Each definition dict is of the form:
-                {
-                    'meaning' : str,
-                    'partOfSpeech' : str,
-                    'isVulgar' : bool,
-                    'syn' : [Entry(
-                                    word=str,
-                                    relevance=int,
-                                    length=int,
-                                    complexity=int,
-                                    form=str
-                            )],
-                    'ant' : [... same as 'syn' ...]
-                }
-            where `Entry` is a namedtuple.
-        """
-
-        url = self.formatWordUrl()
-
-        # Try to download the page source, else throw an error saying we couldn't
-        #   connect to the website.
-        try:
-            html,r = await self.fetch_html(url,session)
-        except (
-            aiohttp.ClientError,
-            aiohttp.http_exceptions.HttpProcessingError,
-        ) as e:
-            logger.error(
-                "aiohttp exception for %s [%s]: %s",
-                url,
-                getattr(e, "status", None),
-                getattr(e, "message", None),
-            )
-            return
-        except Exception as e:
-            raise ThesaurusRequestError(e)
-
+    def parse_html(self, html, r_url):
         soup = BeautifulSoup(html, 'html.parser')
-
-        # The site didn't have this word in their collection.
-        if '/noresult' in str(r.url):
-            raise WordNotFoundError(self.word)
 
         # Traverse the javascript to find where they embedded our data. It keeps
         #   changing index. It used to be 12, now it's 15. Yay ads and tracking!
@@ -170,19 +124,26 @@ class Word(object):
 
         # Disambiguation. They believe we've misspelled it, and they're providing us
         #   with potentially correct spellings. Only bother printing the first one.
-        if '/misspelling' in str(r.url):
+        if '/misspelling' in r_url:
             # TODO: Should we include a way to retrieve this data?
             otherWords = data.get('searchData', {}).get('spellSuggestionsData', [])
             if not otherWords:
-                raise MisspellingError(self.word, '')
+                logger.error(
+                    "No thesaurus results for word: %s. Did you possibly misspell it?",
+                    self.word
+                )
+                return
+                # raise MisspellingError(self.word, '')
             else:
-                raise MisspellingError(self.word, otherWords[0].get('term'))
+                logger.error(
+                    "No thesaurus results for word: %s. Did you mean %s?",
+                    self.word,
+                    otherWords[0].get('term')
+                )
+                return
+                # raise MisspellingError(self.word, otherWords[0].get('term'))
 
         defns = []  # where we shall store data for each definition tab
-
-        # how we will represent an individual synonym/antonym
-        Entry = namedtuple('Entry', ['word', 'relevance', 'length',
-                                     'complexity', 'form'])
 
         ## Utility functions to process attributes for our entries.
         # a syn/ant's relevance is marked 1-3, where 10 -> 1, 100 -> 3.
@@ -263,9 +224,95 @@ class Word(object):
             'examples': examples,
             'origin': origin
         })
+        return defns
 
-        self.data = defns
-        self.extra = self.data.pop()
+    async def fetch_html(self,url,session):
+        resp = await session.request(method="GET", url=url)
+        # resp.raise_for_status()
+        logger.info("Got response [%s] for URL: %s", resp.status, url)
+        html = await resp.text()
+        return html,resp
+
+    async def fetchWordData(self,session):
+        """Downloads the data thesaurus.com has for our word.
+
+        Parameters
+        ----------
+        inputWord : str
+            The word you are searching for on thesaurus.com
+
+        Returns
+        -------
+        list of dict
+            A list of n+1 dictionaries, where n is the number of definitions for the
+            word, and the last dictionary holds information on word origin and
+            example sentences.
+
+            Each definition dict is of the form:
+                {
+                    'meaning' : str,
+                    'partOfSpeech' : str,
+                    'isVulgar' : bool,
+                    'syn' : [Entry(
+                                    word=str,
+                                    relevance=int,
+                                    length=int,
+                                    complexity=int,
+                                    form=str
+                            )],
+                    'ant' : [... same as 'syn' ...]
+                }
+            where `Entry` is a namedtuple.
+        """
+
+        url = self.formatWordUrl()
+
+        # Try to download the page source, else throw an error saying we couldn't
+        #   connect to the website.
+        try:
+            html,r = await self.fetch_html(url,session)
+        except (
+            aiohttp.ClientError,
+            aiohttp.http_exceptions.HttpProcessingError,
+        ) as e:
+            logger.error(
+                "aiohttp exception for %s [%s]: %s",
+                url,
+                getattr(e, "status", None),
+                getattr(e, "message", None),
+            )
+            self.connect_error = True
+            return
+        except Exception as e:
+
+            # FIXME: show e information in logger
+            # TODO: add another function to recapture the uncaputured words
+            logger.error(
+                "Error connecting to thesaurus.com :\n{0}\n".format(e)
+            )
+            self.connect_error = True
+            return
+            # raise ThesaurusRequestError(e)
+
+        # The site didn't have this word in their collection.
+        if '/noresult' in str(r.url):
+            logger.error(
+                "No thesaurus results for word: %s",
+                self.word
+            )
+            return
+            # raise WordNotFoundError(self.word)
+
+        # FIXME: multiprocessing seems can not speed up, test this in future
+        # loop = asyncio.get_running_loop()
+        # with concurrent.futures.ProcessPoolExecutor() as executor:
+        #     defns = await loop.run_in_executor(
+        #             executor, self.parse_html,html, str(r.url))
+
+        defns = self.parse_html(html,str(r.url))
+        if defns:
+            self.data = defns
+            self.extra = self.data.pop()
 
         # return defns
 
