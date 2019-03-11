@@ -11,19 +11,14 @@ If there's anything in here you don't understand or want me to change, just
 make an issue or send me an email at robert <at> robertism <dot> com. Thanks :)
 """
 import asyncio
-import concurrent
 import sys
 from collections import namedtuple
 import json
 
 # import requests
 import aiohttp
-import pathos
 from bs4 import BeautifulSoup
 
-from .exceptions import (
-    WordNotFoundError, ThesaurusRequestError, MisspellingError
-)
 # how we will represent an individual synonym/antonym
 # put it here in order to pickle it in multiprocessing
 Entry = namedtuple('Entry', ['word', 'relevance', 'length',
@@ -98,7 +93,7 @@ class Word(object):
         """
         # in case you want to visit it later
         self.word = inputWord
-        self.connect_error = False
+        self.re_grab = False
         self.url = self.formatWordUrl()
 
     def formatWordUrl(self):
@@ -281,7 +276,6 @@ class Word(object):
                 getattr(e, "status", None),
                 getattr(e, "message", None),
             )
-            self.connect_error = True
             return
         except Exception as e:
 
@@ -290,7 +284,7 @@ class Word(object):
             logger.error(
                 "Error connecting to thesaurus.com :\n{0}\n".format(e)
             )
-            self.connect_error = True
+            self.re_grab = True
             return
             # raise ThesaurusRequestError(e)
 
