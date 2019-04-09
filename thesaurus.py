@@ -303,6 +303,13 @@ class Word(object):
         #     defns = await loop.run_in_executor(
         #             executor, self.parse_html,html, str(r.url))
 
+        if html == '404 Not Found':
+            logger.error(
+                "404 Not Found for word: %s",
+                self.word
+            )
+            return
+
         defns = self.parse_html(html,str(r.url))
         if defns:
             self.data = defns
