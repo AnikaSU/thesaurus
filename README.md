@@ -4,6 +4,11 @@ Greetings, and welcome to the unofficial api for thesaurus.com. It is compatible
 
 **Note**: Recently, thesaurus.com broke their https redirects. This was fixed, so just update your pip package and you'll be good. Also, I have added custom exceptions— see the **Exceptions** section towards the end of this document on how to handle them in your programs. Lastly, we now have a changelog! Check it out! :)  
 
+_Update_
+
+Use `asyncio.run(fetch_list_of_words(l))` to `fetchWordData` asynchronously, where `l` is a list of string(words).
+Check out the `test_fetch_list_of_words` in the `test` package for details.
+
 ## Introduction
 With the thesaurus-api, you are able to grab synonyms and antonyms from thesaurus.com. Thanks to the way the website highlights synonym/antonym entries in different colors according to their relevance, I have also included functions to grab certain ranks of syn/ant entries according to the level of relevance you require.
 

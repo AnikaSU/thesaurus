@@ -115,7 +115,7 @@ class Word(object):
             if d.string[0:20] == 'window.INITIAL_STATE':
                 data = d.string[23:-1] # remove 'window.INITIAL_STATE = ' and ';'
                 #clean up disallowed undefined values in json:
-                data = data.replace("undefined", "null");
+                data = data.replace("undefined", "null")
                 data = json.loads(data)
                 break
 
