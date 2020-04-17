@@ -111,8 +111,10 @@ def fetchWordData(inputWord):
     #   changing index. It used to be 12, now it's 15. Yay ads and tracking!
     data = soup.select('script')
     for d in reversed(data):
-        if d.text[0:20] == 'window.INITIAL_STATE':
-            data = d.text[23:-1] # remove 'window.INITIAL_STATE = ' and ';'
+        if d.string[0:20] == 'window.INITIAL_STATE':
+            data = d.string[23:-1] # remove 'window.INITIAL_STATE = ' and ';'
+            #clean up disallowed undefined values in json:
+            data = data.replace("undefined", "null");
             data = json.loads(data)
             break
 
@@ -196,7 +198,7 @@ def fetchWordData(inputWord):
     # add origin and examples to the last element so we can .pop() it out later
     otherData = data['searchData']['tunaApiData']
     examples = [x['sentence'] for x in otherData['exampleSentences']]
-    etymology = otherData['etymology']
+    etymology = otherData.get('etymology', [])
 
     if len(etymology) > 0:
         origin = BeautifulSoup(etymology[0]['content'], "html.parser").text
